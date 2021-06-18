@@ -6,19 +6,19 @@ import System.Environment
 import Text.ParserCombinators.Parsec hiding (spaces)
 
 main :: IO ()
-main = do args <- getArgs
-          putStrLn $ readExpr ( args !! 0)
-
-spaces :: Parser ()
-spaces = skipMany1 space
+main = getArgs >>= putStrLn . show . eval . readExpr . (!! 0)
 
 symbol :: Parser Char
 symbol = oneOf "!$%&|*+-/:<=?>@^_~#"
 
-readExpr :: String -> String
+readExpr :: String -> LispVal
 readExpr input = case parse parseExpr "lisp" input of
-    Left err -> "No match: " ++ show err
-    Right val -> "Found value " ++ show val
+    Left err -> String $ "No match: " ++ show err
+    Right val -> val 
+   --  Right val -> "Found value " ++ show val
+
+spaces :: Parser ()
+spaces = skipMany1 space
 
 type Numerator = Integer
 type Denominator = Integer
@@ -31,7 +31,8 @@ data LispVal = Atom String
              | Rational (Numerator, Denominator)
              | String String 
              | Char Char
-             | Bool Bool deriving (Show)
+             | Bool Bool 
+             -- deriving (Show)
 
 escapedChars :: Parser Char
 escapedChars = do char '\\'
@@ -80,21 +81,20 @@ parseHex = do try (string "#x")
               x <- many1 (oneOf "0123456789abcdefABCDEF")
               return $ Number (fst $ (readHex x) !! 0)
 
-parseRadix :: Parser LispVal
-parseRadix = try parseDec 
-         <|> try parseBin
-         <|> try parseOct 
-         <|> try parseHex 
-         <|> parseAtom
-
 parseNum :: Parser LispVal
 parseNum = many1 digit >>= \n ->
            return $ Number (read n)
 
 parseNumber :: Parser LispVal
-parseNumber = parseRadix <|> parseNum
-{-- parseNumber = do n <- many1 digit
-                 return $ Number (read n) --}
+parseNumber = do 
+          x <- ( try parseDec
+             <|> parseBin
+             <|> parseOct 
+             <|> parseHex 
+             <|> try parseNum )
+          return $ x
+-- parseNumber = do n <- many1 digit
+--                  return $ Number (read n) 
 -- parseNumber = liftM (Number . read) $ many1 digit
 
 parseFloat :: Parser LispVal
@@ -122,11 +122,57 @@ parseAtom = do first <- letter <|> symbol
                let atom = [first] ++ rest
                return $ Atom atom
 
+parseList :: Parser LispVal
+parseList = do head <- sepEndBy parseExpr spaces
+               next <- optionMaybe (char '.')
+               case next of
+                  Nothing -> return $ List head
+                  Just _ -> do tail <- spaces >> parseExpr
+                               return $ DottedList head (tail)
+-- parseList = liftM List $ sepBy parseExpr spaces
+
+parseQuoted :: Parser LispVal
+parseQuoted = do char '\''
+                 x <- parseExpr
+                 return $ List [Atom "quote", x]
+
+parseQuasiQuoted :: Parser LispVal
+parseQuasiQuoted = do char '`'
+                      x <- parseExpr
+                      return $ List [Atom "quasiquote", x]
+
 parseExpr :: Parser LispVal
-parseExpr = parseChar
-        <|> parseString
+parseExpr = parseString
         <|> try parseFloat
         <|> try parseRational
-        <|> parseNumber
-        <|> parseBool
-        <|> parseAtom
+        <|> try parseNumber
+        <|> try parseBool
+        <|> try parseChar
+        <|> try parseQuoted
+        <|> try parseQuasiQuoted
+        <|> do char '('
+               x <- parseList
+               char ')'
+               return x
+        <|> try parseAtom
+
+showVal :: LispVal -> String
+showVal (String contents) = "\"" ++ contents ++ "\""
+showVal (Atom name) = name
+showVal (Number contents) = show contents
+showVal (Bool True) = "#t"
+showVal (Bool False) = "#f"
+showVal (List contents) = "(" ++ unwordsList contents ++ ")"
+showVal (DottedList head tail) = "(" ++ unwordsList head ++ "." ++ showVal tail ++ ")"
+
+unwordsList :: [LispVal] -> String
+unwordsList = unwords . map showVal
+
+instance Show LispVal where show = showVal
+
+eval :: LispVal -> LispVal
+-- eval val@(String _) = val
+-- eval val@(Number _) = val
+-- eval val@(Bool _) = val
+eval (List [Atom "quote", val]) = val
+eval val = val
